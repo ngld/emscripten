@@ -282,6 +282,8 @@ typedef struct SDL_PixelFormat
     Uint8 Gshift;
     Uint8 Bshift;
     Uint8 Ashift;
+    /** Alpha value information (per-surface alpha) */
+    Uint8  alpha;
     int refcount;
     struct SDL_PixelFormat *next;
 } SDL_PixelFormat;

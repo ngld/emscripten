@@ -1067,6 +1067,20 @@ function writeAsciiToMemory(str, buffer, dontAddNull) {
 }
 Module['writeAsciiToMemory'] = writeAsciiToMemory;
 
+function getEmptySlot(x) {
+  var slot = null;
+  for (var i = 0; i < x.length; i++) {
+    if (x[i] === null) {
+      slot = i;
+      break;
+    }
+  }
+  if (slot === null) {
+    slot = x.length;
+  }
+  return slot;
+}
+
 {{{ unSign }}}
 {{{ reSign }}}
 

@@ -21,10 +21,12 @@ var LibrarySDL = {
     version: null,
 
     surfaces: {},
+    cursors: {},
     // A pool of freed canvas elements. Reusing them avoids GC pauses.
     canvasPool: [],
     events: [],
     fonts: [null],
+    timers: ['reserved'],
 
     // The currently preloaded audio elements ready to be played
     audios: [null],
@@ -71,6 +73,9 @@ var LibrarySDL = {
 
     canRequestFullscreen: false,
     isRequestingFullscreen: false,
+    
+    windowTitle: null,
+    windowIcon: null,
 
     textInput: false,
 
@@ -238,6 +243,7 @@ var LibrarySDL = {
       {{{ makeSetValue('pixelFormat', C_STRUCTS.SDL_PixelFormat.palette, '0', 'i32') }}} // TODO
       {{{ makeSetValue('pixelFormat', C_STRUCTS.SDL_PixelFormat.BitsPerPixel, 'bpp * 8', 'i8') }}}
       {{{ makeSetValue('pixelFormat', C_STRUCTS.SDL_PixelFormat.BytesPerPixel, 'bpp', 'i8') }}}
+      {{{ makeSetValue('pixelFormat', C_STRUCTS.SDL_PixelFormat.alpha, '255', 'i8') }}}
 
       {{{ makeSetValue('pixelFormat', C_STRUCTS.SDL_PixelFormat.Rmask, 'rmask || 0x000000ff', 'i32') }}}
       {{{ makeSetValue('pixelFormat', C_STRUCTS.SDL_PixelFormat.Gmask, 'gmask || 0x0000ff00', 'i32') }}}
@@ -245,7 +251,7 @@ var LibrarySDL = {
       {{{ makeSetValue('pixelFormat', C_STRUCTS.SDL_PixelFormat.Amask, 'amask || 0xff000000', 'i32') }}}
 
       // Decide if we want to use WebGL or not
-      var useWebGL = (flags & 0x04000000) != 0; // SDL_OPENGL
+      var useWebGL = (flags & {{{ cDefine('SDL_OPENGL') }}}) != 0;
       SDL.GL = SDL.GL || useWebGL;
       var canvas;
       if (!usePageCanvas) {
@@ -328,10 +334,9 @@ var LibrarySDL = {
     },
 
     freeSurface: function(surf) {
-      var refcountPointer = surf + {{{ C_STRUCTS.SDL_Surface.refcount }}};
-      var refcount = {{{ makeGetValue('refcountPointer', '0', 'i32') }}};
+      var refcount = {{{ makeGetValue('surf', C_STRUCTS.SDL_Surface.refcount, 'i32') }}};
       if (refcount > 1) {
-        {{{ makeSetValue('refcountPointer', '0', 'refcount - 1', 'i32') }}};
+        {{{ makeSetValue('surf', C_STRUCTS.SDL_Surface.refcount, 'refcount - 1', 'i32') }}};
         return;
       }
 
@@ -1110,17 +1115,32 @@ var LibrarySDL = {
   SDL_UpdateRects: function(surf, numrects, rects) {
     // We actually do the whole screen in Unlock...
   },
-
+  
   SDL_Delay: function(delay) {
     if (!ENVIRONMENT_IS_WORKER) abort('SDL_Delay called on the main thread! Potential infinite loop, quitting.');
     // horrible busy-wait, but in a worker it at least does not block rendering
     var now = Date.now();
     while (Date.now() - now < delay) {}
   },
-
+  
   SDL_WM_SetCaption: function(title, icon) {
-    title = title && Pointer_stringify(title);
-    icon = icon && Pointer_stringify(icon);
+    if(title) {
+      document.title = SDL.windowTitle = Pointer_stringify(title);
+    }
+    if(icon) {
+      SDL.windowIcon = Pointer_stringify(icon);
+    }
+  },
+  
+  SDL_WM_GetCaption: function(title, icon) {
+    if(title) {
+      var winTitle = allocate(intArrayFromString(SDL.windowTitle), 'i8', ALLOC_NORMAL);
+      {{{ makeSetValue('title', 0, 'winTitle', 'i8') }}}
+    }
+    if(icon) {
+      var winIcon = allocate(intArrayFromString(SDL.windowIcon), 'i8', ALLOC_NORMAL);
+      {{{ makeSetValue('icon', 0, 'winIcon', 'i8') }}}
+    }
   },
 
   SDL_EnableKeyRepeat: function(delay, interval) {
@@ -1167,17 +1187,27 @@ var LibrarySDL = {
   },
 
   SDL_ShowCursor: function(toggle) {
+    // An empty png graphic.
+    var hidden = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAEklEQVQ4jWNgGAWjYBSMAggAAAQQAAF/TXiOAAAAAElFTkSuQmCC';
+    
     switch (toggle) {
       case 0: // SDL_DISABLE
         if (Browser.isFullScreen) { // only try to lock the pointer when in full screen mode
           Module['canvas'].requestPointerLock();
           return 0;
         } else { // else return SDL_ENABLE to indicate the failure
-          return 1;
+          // Workaround: Set a transparent image as cursor.
+          document.body.style.cursor = 'url(' + hidden + '), auto';
+          return 0;
+          //return 1;
         }
         break;
       case 1: // SDL_ENABLE
         Module['canvas'].exitPointerLock();
+        
+        if(document.body.style.cursor.indexOf(hidden) > -1) {
+          document.body.style.cursor = '';
+        }
         return 1;
         break;
       case -1: // SDL_QUERY
@@ -1187,6 +1217,72 @@ var LibrarySDL = {
         console.log( "SDL_ShowCursor called with unknown toggle parameter value: " + toggle + "." );
         break;
     }
+  },
+  
+  SDL_CreateColorCursor: function (surf, hot_x, hot_y) {
+    SDL.cursors[surf] = {
+      //surface: surf,
+      hot_x: hot_x,
+      hot_y: hot_y
+    };
+    
+    // The application shouldn't use this pointer at all, only pass it to SDL_*() functions.
+    return surf;
+  },
+  
+  SDL_SetCursor: function (cursor) {
+    var url = SDL.surfaces[cursor].canvas.toDataURL();
+    document.body.style.cursor = 'url("' + url + '"), auto';
+  },
+  
+  SDL_FreeCursor: function (cursor) {
+    if(cursor) {
+      SDL.cursors[cursor] = null;
+      // NOTE: The cursor handle is actually the pointer to the surface, so we can easily do this.
+      SDL.freeSurface(cursor);
+    }
+  },
+  
+  SDL_CreateCursor__deps: ['SDL_CreateColorCursor'],
+  SDL_CreateCursor: function (data, mask, w, h, hot_x, hot_y) {
+    var surf = SDL.makeSurface(w, h, 0, false, 'SDL_CreateCursor', 0, 0, 0, 0);
+    var surfData = SDL.surfaces[surf];
+    var iData = surfData.ctx.getImageData(0, 0, w, h);
+    var offset;
+    var pos = (w * h) / 8;
+    var dv, mv, c = 0;
+    var pdata = iData.data;
+    
+    for(var y = h - 1; y > -1; y--) {
+      for(var x = w - 1; x > -1; x--) {
+        offset = (y*w + x)*4;
+        
+        if(c == 0) {
+          c = 7;
+          pos--;
+          dv = {{{ makeGetValue('data', 'pos', 'i8') }}};
+          mv = {{{ makeGetValue('mask', 'pos', 'i8') }}};
+        } else {
+          dv = dv >> 1;
+          mv = mv >> 1;
+          c--;
+        }
+        
+        if(mv & 0x01) {
+          if(dv & 0x01 == 0) {
+            pdata[offset] = pdata[offset + 1] = pdata[offset + 2] = 255;
+          } else {
+            pdata[offset] = pdata[offset + 1] = pdata[offset + 2] = 0;
+          }
+          pdata[offset + 3] = 255;
+        } else {
+          pdata[offset + 3] = 0;
+        }
+      }
+    }
+    
+    surfData.ctx.putImageData(iData, 0, 0);
+    return _SDL_CreateColorCursor(surf, hot_x, hot_y);
   },
 
   SDL_GetError: function() {
@@ -1215,6 +1311,7 @@ var LibrarySDL = {
     newData.ctx.drawImage(oldData.canvas, 0, 0);
     return ret;
   },
+  SDL_DisplayFormat: 'SDL_DisplayFormatAlpha',
 
   SDL_FreeSurface: function(surf) {
     if (surf) SDL.freeSurface(surf);
@@ -1223,6 +1320,7 @@ var LibrarySDL = {
   SDL_UpperBlit: function(src, srcrect, dst, dstrect) {
     var srcData = SDL.surfaces[src];
     var dstData = SDL.surfaces[dst];
+    
     var sr, dr;
     if (srcrect) {
       sr = SDL.loadRect(srcrect);
@@ -1234,10 +1332,41 @@ var LibrarySDL = {
     } else {
       dr = { x: 0, y: 0, w: -1, h: -1 };
     }
+    
+    // This should fix issues with negative values for x or y.
+    // It only works as long as dr and sr have the same size... otherwise the result will be slightly distorted.
+    if (sr.x < 0) {
+      sr.w += sr.x;
+      dr.x -= sr.x;
+      dr.w += sr.x;
+      sr.x = 0;
+    }
+    if (sr.y < 0) {
+      sr.h += sr.y;
+      dr.y -= sr.y;
+      dr.h += sr.y;
+      sr.y = 0;
+    }
+    if (dr.x < 0) {
+      dr.w += dr.x;
+      sr.x -= dr.x;
+      sr.w += dr.x;
+      dr.x = 0;
+    }
+    if (dr.y < 0) {
+      dr.h += dr.y;
+      sr.y -= dr.y;
+      sr.h += dr.y;
+      dr.y = 0;
+    }
+    
+    if(sr.w < 1 || sr.h < 1 || dr.w < 1 || dr.h < 1) return 1;
+    
     var oldAlpha = dstData.ctx.globalAlpha;
     dstData.ctx.globalAlpha = srcData.alpha/255;
     dstData.ctx.drawImage(srcData.canvas, sr.x, sr.y, sr.w, sr.h, dr.x, dr.y, sr.w, sr.h);
     dstData.ctx.globalAlpha = oldAlpha;
+    
     if (dst != SDL.screen) {
       // XXX As in IMG_Load, for compatibility we write out |pixels|
       console.log('WARNING: copying canvas data to memory for compatibility');
@@ -1314,6 +1443,8 @@ var LibrarySDL = {
 
   SDL_SetAlpha: function(surf, flag, alpha) {
     SDL.surfaces[surf].alpha = alpha;
+    var format = {{{ makeGetValue('surf', C_STRUCTS.SDL_Surface.format, 'i8*') }}}
+    {{{ makeSetValue('format', C_STRUCTS.SDL_PixelFormat.alpha, 'alpha', 'i8') }}}
   },
 
   SDL_SetColorKey: function(surf, flag, key) {
@@ -1322,6 +1453,16 @@ var LibrarySDL = {
     // each pixel to replace that color seems prohibitively expensive.
     Runtime.warnOnce('SDL_SetColorKey is a no-op for performance reasons');
     return 0;
+  },
+  
+  SDL_SetClipRect: function(surf, clip_rect) {
+    {{{ makeSetValue('surf', C_STRUCTS.SDL_Surface.clip_rect, 'clip_rect', 'i8*') }}}
+    
+    var clip = SDL.loadRect(clip_rect);
+    var ctx = SDL.surfaces[surf].ctx;
+    ctx.beginPath();
+    ctx.rect(clip.x, clip.y, clip.w, clip.h);
+    ctx.clip();
   },
 
   SDL_GetTicks: function() {
@@ -1340,7 +1481,15 @@ var LibrarySDL = {
     }
     return 1;
   },
-
+  
+  SDL_WaitEvent__deps: ['SDL_PollEvent', 'SDL_Delay'],
+  SDL_WaitEvent: function(ptr) {
+    // Ugly loop, but it will abort on the main thread anyway and I guess there's no other solution...
+    while(!_SDL_PollEvent(ptr)) {
+      _SDL_Delay(0.1);
+    }
+  },
+  
   SDL_PushEvent: function(ptr) {
     SDL.events.push(ptr); // XXX Should we copy it? Not clear from API
     return 0;
@@ -2663,15 +2812,49 @@ var LibrarySDL = {
     SDL.unicode = on;
     return ret;
   },
-
+  
   SDL_AddTimer: function(interval, callback, param) {
-    return window.setTimeout(function() {
-      Runtime.dynCall('iii', callback, [interval, param]);
+    var id = getEmptySlot(SDL.timers);
+    
+    SDL.timers[id] = window.setTimeout(function() {
+      if (ABORT) return;
+      interval = Runtime.dynCall('iii', callback, [interval, param]);
+      
+      // 0 cancels the timer, all other return values set a new timeout.
+      if(interval > 0) {
+        SDL.timers[id] = window.setTimeout(arguments.callee, interval);
+      } else {
+        SDL.timers[id] = null;
+      }
     }, interval);
+    return id;
   },
   SDL_RemoveTimer: function(id) {
-    window.clearTimeout(id);
+    window.clearTimeout(SDL.timers[id]);
+    SDL.timers[id] = null;
     return true;
+  },
+  SDL_SetTimer: function(interval, callback) {
+    if (interval) {
+      if (SDL.timers[0] != 'reserved') {
+        window.clearTimeout(SDL.timers[0]);
+      }
+      SDL.timers[0] = window.setTimeout(function() {
+        if (ABORT) return;
+        interval = Runtime.dynCall('ii', callback, [interval]);
+        
+        // 0 cancels the timer, all other return values set a new timeout.
+        if(interval > 0) {
+          SDL.timers[0] = window.setTimeout(arguments.callee, interval);
+        } else {
+          SDL.timers[0] = 'reserved';
+        }
+      }, interval);
+    } else {
+      window.clearTimeout(SDL.timers[0]);
+      SDL.timers[0] = 'reserved';
+    }
+    return 1;
   },
 
   SDL_CreateThread: function() {
