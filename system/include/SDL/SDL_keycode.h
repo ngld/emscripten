@@ -49,6 +49,7 @@ typedef Sint32 SDL_Keycode;
 enum
 {
     SDLK_UNKNOWN = 0,
+    SDLK_FIRST = 0,
 
     SDLK_RETURN = '\r',
     SDLK_ESCAPE = '\033',
