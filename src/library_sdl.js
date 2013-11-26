@@ -685,7 +685,7 @@ var LibrarySDL = {
 
     estimateTextWidth: function(fontData, text) {
       var h = fontData.size;
-      var fontString = h + 'px ' + fontData.name;
+      var fontString = h + 'px ' + fontData.font_name;
       var tempCtx = SDL.ttfContext;
 #if ASSERTIONS
       assert(tempCtx, 'TTF_Init must have been called');
@@ -2139,8 +2139,22 @@ var LibrarySDL = {
     var id = SDL.fonts.length;
     SDL.fonts.push({
       name: filename, // but we don't actually do anything with it..
-      size: size
+      size: size,
+      font_name: '"SDL_custom_' + id + '"'
     });
+    
+    var data = new Blob([FS.readFile(filename)], { type: 'application/octet-binary' });
+    var style = document.createElement('style');
+    style.setAttribute('type', 'text/css');
+    style.innerHTML = '@font-face {' +
+                      '  font-family: "SDL_custom_' + id + '";'+
+                      '  src: url(' + URL.createObjectURL(data) + ');'+
+                      '}';
+    document.getElementsByTagName('head')[0].appendChild(style);
+    
+    // "Preload" it
+    SDL.estimateTextWidth(SDL.fonts[id], "...");
+    
     return id;
   },
 
@@ -2155,14 +2169,16 @@ var LibrarySDL = {
     var w = SDL.estimateTextWidth(fontData, text);
     var h = fontData.size;
     var color = SDL.loadColorToCSSRGB(color); // XXX alpha breaks fonts?
-    var fontString = h + 'px ' + fontData.name;
+    var fontString = h + 'px ' + fontData.font_name;
     var surf = SDL.makeSurface(w, h, 0, false, 'text:' + text); // bogus numbers..
     var surfData = SDL.surfaces[surf];
+    
     surfData.ctx.save();
     surfData.ctx.fillStyle = color;
     surfData.ctx.font = fontString;
-    surfData.ctx.textBaseline = 'top';
-    surfData.ctx.fillText(text, 0, 0);
+    
+    surfData.ctx.textBaseline = 'bottom';
+    surfData.ctx.fillText(text, 0, h);
     surfData.ctx.restore();
     return surf;
   },
